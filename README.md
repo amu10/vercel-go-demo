@@ -64,9 +64,32 @@ vercel deploy --prod   # 生产
 
 **方式二：Git 导入**
 
-推到 GitHub 后，在 Vercel 里 Import Project，**Framework Preset 选 Go 或 Other**，Root Directory 留空。
+推到 GitHub 后，在 Vercel 里 Import Project：
+
+- **Framework Preset 选 `Other`**（`vercel.json` 里已用 `"framework": null` 锁死）
+- Root Directory 留空
 
 Vercel 会自动检测 `api/**/*.go` 并逐个编译，不需要在 `vercel.json` 里显式指定 runtime。
+
+> ⚠️ **Framework Preset 千万别选 `Go`。**
+> 选了 Go 会走 Vercel 的 Go Framework Preset（服务器模式，要求 `main.go` / `cmd/api/main.go` /
+> `cmd/server/main.go` 入口），该模式会把 `@vercel/go` 放进 `ignoreRuntimes`，
+> `api/` 下的文件不再被识别为函数，构建直接报错：
+> `The pattern "api/**/*.go" defined in functions doesn't match any Serverless Functions`。
+> 服务器模式见下一节。
+
+### 方式三：Go Framework Preset（服务器模式）
+
+2026 年起 Vercel 主推的形态：**一个 Go 二进制跑全部路由**，不再是「一个目录一个函数」。
+
+```bash
+# 入口必须是这三个之一
+main.go  /  cmd/api/main.go  /  cmd/server/main.go
+```
+
+`main.go` 里自己 `http.ListenAndServe(":"+os.Getenv("PORT"), mux)`，
+`vercel.json` 改成 `{"framework": "go"}` 并**删掉 `functions` 段**（该模式下 key 匹配不到会报错）。
+代价：丢掉「每目录一函数」的隔离性，冷启动从单函数变成整个二进制。
 
 ## 四、Vercel Go 的硬性约束（踩过就懂）
 
@@ -147,12 +170,29 @@ env := os.Getenv("APP_ENV")   // Vercel → Settings → Environment Variables
 
 ```json
 {
+  "framework": null,
   "cleanUrls": true,
   "headers": [{ "source": "/api/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-store" }] }],
   "functions": { "api/**/*.go": { "memory": 1024, "maxDuration": 10 } }
 }
 ```
 
+- `framework: null`：**关键**。禁止 Vercel 走 Go Framework Preset，保住 `api/` 目录函数模式
 - `cleanUrls`：去掉 `.html` 后缀
 - `no-store`：接口别被 CDN 缓存
 - `maxDuration`：超时秒数（Hobby 最高 10）
+
+## 七之一、报 `unmatched-function-pattern` 怎么排查
+
+按命中率排序：
+
+| # | 原因 | 判断方法 | 修法 |
+| --- | --- | --- | --- |
+| 1 | Framework Preset 被设为 `Go`（或服务端按 `go.mod` 判成了 Go） | 构建日志里 Framework 一行显示 `Go` | `vercel.json` 加 `"framework": null`，或面板改 `Other` |
+| 2 | Root Directory 指错，Vercel 看不到 `api/` | 构建日志没有 `api/xxx/index.go` 相关输出 | Root Directory 留空或指向 `go.mod` 所在层 |
+| 3 | `.vercelignore` / 未提交，`api/**/*.go` 实际没上传 | `git ls-files \| grep api` 为空 | 提交文件或改 ignore |
+| 4 | 只是想止血 | — | 直接删掉 `functions` 段：`memory` 1024 和 `maxDuration` 10 本来就是默认值，删了零损失 |
+
+> 补充：`functions` 的 key 是用 `minimatch` 去匹配**源文件相对路径**的，
+> `api/**/*.go` 能同时命中 `api/index.go` 和 `api/hello/index.go`（`**` 可匹配零层），
+> 所以 pattern 本身没问题——问题永远在于「这些文件有没有被识别成函数」。
