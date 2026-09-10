@@ -14,20 +14,30 @@ GET  /api/config                             go:embed 配置演示
 
 ```
 vercel-go-demo/
-├── api/                    ← Vercel 只认这个目录，每个子目录编译成一个函数
+├── api/                    ← 【函数模式】Vercel 只认这个目录，每个子目录编译成一个函数
 │   ├── index.go            → /api
 │   ├── health/index.go     → /api/health
 │   ├── hello/index.go      → /api/hello
 │   ├── echo/index.go       → /api/echo
 │   └── config/index.go     → /api/config
-├── internal/               ← 共享代码（Vercel 不会编译成函数）
+├── pkg/                    ← 共享代码（**不能叫 internal/**，原因见第八节）
+│   ├── handlers/           业务实现，两种模式共用这一份
 │   ├── config/             go:embed 内嵌配置 + 环境变量覆盖
 │   └── response/           统一 JSON 响应
-├── cmd/devserver/          ← 本地调试服务器（不参与部署）
+├── cmd/
+│   ├── api/                ← 【服务器模式】入口，ServeMux 汇总全部路由
+│   └── devserver/          ← 本地调试服务器（不参与部署）
 ├── public/index.html       ← 静态页面，部署后访问根路径即可
+├── site.go                 ← 根包，go:embed 内嵌 public/（服务器模式托管首页用）
 ├── go.mod
-└── vercel.json
+├── vercel.json             ← 函数模式配置（当前生效）
+└── vercel.server.json      ← 服务器模式配置（切换时覆盖 vercel.json）
 ```
+
+> **为什么业务代码在 `pkg/handlers`，`api/` 里只剩一行转发？**
+> 这样两种部署模式共用同一份实现：`api/hello/index.go` 是
+> `func Handler(w, r) { handlers.Hello(w, r) }`，`cmd/api/main.go` 里是
+> `mux.HandleFunc("/api/hello", handlers.Hello)`。切模式只动 `vercel.json`，业务零改动。
 
 > **为什么每个端点一个子目录，而不是 `api/hello.go` 平铺？**
 > 平铺 Vercel 也能跑（它逐个文件单独编译），但本地 `go build ./...` 会报
@@ -36,9 +46,19 @@ vercel-go-demo/
 
 ## 二、本地运行
 
+**跑函数模式那份（等价于线上的 `api/` 目录）：**
+
 ```bash
 go run ./cmd/devserver          # http://localhost:8080
 ```
+
+**跑服务器模式那份（等价于线上的 `cmd/api`）：**
+
+```bash
+PORT=8081 go run ./cmd/api      # http://localhost:8081
+```
+
+两者的业务实现是同一份 `pkg/handlers`，路由和响应完全一致。
 
 带环境变量跑（验证配置覆盖）：
 
@@ -81,15 +101,41 @@ Vercel 会自动检测 `api/**/*.go` 并逐个编译，不需要在 `vercel.json
 ### 方式三：Go Framework Preset（服务器模式）
 
 2026 年起 Vercel 主推的形态：**一个 Go 二进制跑全部路由**，不再是「一个目录一个函数」。
+本项目已经把这条路铺好了，入口就是 `cmd/api/main.go`：
 
-```bash
-# 入口必须是这三个之一
-main.go  /  cmd/api/main.go  /  cmd/server/main.go
+```go
+mux := http.NewServeMux()
+mux.HandleFunc("/api", handlers.Index)
+mux.HandleFunc("/api/health", handlers.Health)
+mux.HandleFunc("/api/hello", handlers.Hello)
+mux.HandleFunc("/api/echo", handlers.Echo)
+mux.HandleFunc("/api/config", handlers.Config)
+mux.HandleFunc("/", site.Handler)          // 首页：public/ 不再被托管，得靠 go:embed
+log.Fatal(http.ListenAndServe(":"+os.Getenv("PORT"), mux))
 ```
 
-`main.go` 里自己 `http.ListenAndServe(":"+os.Getenv("PORT"), mux)`，
-`vercel.json` 改成 `{"framework": "go"}` 并**删掉 `functions` 段**（该模式下 key 匹配不到会报错）。
-代价：丢掉「每目录一函数」的隔离性，冷启动从单函数变成整个二进制。
+**切换方式**（二选一）：
+
+```bash
+# CLI：用 --local-config 指定，不动主配置
+vercel deploy --local-config vercel.server.json
+
+# 或 Git 集成：直接覆盖（记得切回来时用 git checkout vercel.json）
+cp vercel.server.json vercel.json
+```
+
+`vercel.server.json` 的内容就三件事：`"framework": "go"`、`cleanUrls`、接口不缓存。
+**注意它没有 `functions` 段** —— 服务器模式下 `api/**/*.go` 匹配不到任何东西，写了必报错。
+
+| | 函数模式 | 服务器模式 |
+| --- | --- | --- |
+| 产物 | 5 个独立函数，各自冷启动 | 1 个二进制，1 次冷启动 |
+| 路由 | 目录路径即路由 | 代码里的 `ServeMux` |
+| 首页 | Vercel 自动托管 `public/` | 必须 `go:embed`（见根包 `site`） |
+| 能用 gin/chi | 不能 | 能 |
+| 内存共享 | 不行，实例互相隔离 | 可以，进程内缓存有效 |
+
+代价：丢掉「每目录一函数」的隔离性，一个 panic 会波及整个进程（虽然 Vercel 会重启）。
 
 ## 四、Vercel Go 的硬性约束（踩过就懂）
 
@@ -101,6 +147,7 @@ main.go  /  cmd/api/main.go  /  cmd/server/main.go
 | **无状态** | 实例随时创建/回收，全局变量不可靠 | 内存缓存命中率随机，别当真 |
 | **有执行超时** | Hobby 10 秒；Pro/Enterprise 可用 `maxDuration` 提高 | 长任务必然被杀 |
 | **方法要自己判** | 所有 HTTP 方法都进同一个 `Handler` | 不做 `r.Method` 判断等于放行全部动词 |
+| **不能 import `internal/`** | Vercel 构建函数时会改写模块路径 | `use of internal package ... not allowed`，详见第八节 |
 
 ## 五、配置怎么读（重点）
 
@@ -196,3 +243,32 @@ env := os.Getenv("APP_ENV")   // Vercel → Settings → Environment Variables
 > 补充：`functions` 的 key 是用 `minimatch` 去匹配**源文件相对路径**的，
 > `api/**/*.go` 能同时命中 `api/index.go` 和 `api/hello/index.go`（`**` 可匹配零层），
 > 所以 pattern 本身没问题——问题永远在于「这些文件有没有被识别成函数」。
+
+## 八、为什么共享代码叫 `pkg/` 而不是 `internal/`
+
+这是 Vercel Go **函数模式**最反直觉的一条限制。
+
+Vercel 构建 `api/` 下的函数时，会生成一个临时的 `main__vc__go__.go` 并**改写模块路径**，
+所以报错长这样：
+
+```
+Error: Command failed: go build -ldflags -s -w -o /tmp/xxx/bootstrap /vercel/path0/main__vc__go__.go
+package command-line-arguments
+imports handler/api/config
+index.go:6:2: use of internal package vercel-go-demo/internal/config not allowed
+```
+
+重点看 `imports handler/api/config` —— 模块名从 `vercel-go-demo` 被改成了包名 `handler`。
+这下 `vercel-go-demo/internal/config` 相对它就变成了「别的模块」，
+Go 的 internal 可见性规则（只允许同一模块树内引用）当场拒绝。
+
+三条路：
+
+| 方案 | 做法 | 适用 |
+| --- | --- | --- |
+| 改用普通包（本项目采用） | `internal/` → `pkg/`，引用 `vercel-go-demo/pkg/xxx` | 最省事 |
+| 公开桥接包 | `api/x.go` → `pkg/app`（普通包）→ `internal/xxx` | 想保留 internal 语义时 |
+| 走服务器模式 | `framework: "go"`，整个模块一起 `go build`，不改写路径 | 已经是服务器模式就无所谓 |
+
+**本地 `go build ./...` 发现不了这个问题** —— 本地模块路径正常，internal 完全合法，
+只有部署到 Vercel 函数模式才炸。别指望本地编译给你兜底。
