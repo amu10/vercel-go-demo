@@ -1,0 +1,21 @@
+# Vercel
+.vercel
+.vercelignore
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# 本地环境变量（不要提交）
+.env
+.env.local

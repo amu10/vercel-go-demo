@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vercel Go Runtime 示例</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f7f8fa; color: #1a1a1a; line-height: 1.6;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  .sub { color: #666; font-size: 14px; margin-bottom: 28px; }
+  .card {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .method {
+    font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+    background: #eef2ff; color: #4338ca;
+  }
+  .method.post { background: #fef3c7; color: #92400e; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input {
+    padding: 7px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+    font-size: 14px; outline: none; min-width: 120px;
+  }
+  input:focus { border-color: #6366f1; }
+  button {
+    padding: 7px 16px; background: #111827; color: #fff; border: none;
+    border-radius: 6px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #374151; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px;
+    overflow-x: auto; font-size: 12.5px; line-height: 1.55; margin: 14px 0 0;
+    max-height: 380px; overflow-y: auto;
+  }
+  .hint { font-size: 12.5px; color: #6b7280; margin-top: 8px; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Vercel Go Runtime 示例</h1>
+  <p class="sub">所有接口由 <code>api/*.go</code> 编译成 Serverless 函数，配置通过 <code>go:embed</code> 内嵌</p>
+
+  <div class="card">
+    <h2><span class="method">GET</span> /api —— 路由清单</h2>
+    <div class="row"><button onclick="call('GET','/api')">发送请求</button></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="method">GET</span> /api/health —— 健康检查</h2>
+    <div class="row"><button onclick="call('GET','/api/health')">发送请求</button></div>
+    <p class="hint">会返回 Go 版本、内存、实例 hostname —— 多刷几次可能看到不同 hostname，这就是 Serverless</p>
+  </div>
+
+  <div class="card">
+    <h2><span class="method">GET</span> /api/hello —— 查询参数</h2>
+    <div class="row">
+      <input id="name" placeholder="name" value="张三">
+      <input id="lang" placeholder="lang: zh/en/ja" value="zh">
+      <input id="count" placeholder="count" value="3">
+      <button onclick="hello()">发送请求</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="method post">POST</span> /api/echo —— JSON 请求体</h2>
+    <div class="row">
+      <input id="msg" placeholder="message" value="Hello Vercel" style="flex:1;min-width:200px">
+      <button onclick="echo()">发送请求</button>
+    </div>
+    <p class="hint">会带上 5 条 items，受环境变量 <code>MAX_ITEMS</code>（默认 10）限制</p>
+  </div>
+
+  <div class="card">
+    <h2><span class="method">GET</span> /api/config —— go:embed 配置</h2>
+    <div class="row"><button onclick="call('GET','/api/config')">发送请求</button></div>
+    <p class="hint">证明在只读文件系统上依然能可靠读到配置</p>
+  </div>
+
+  <pre id="out">点击上方按钮，响应会显示在这里…</pre>
+</div>
+
+<script>
+const out = document.getElementById('out');
+
+async function call(method, path, body) {
+  out.textContent = '请求中…';
+  try {
+    const opt = { method, headers: {} };
+    if (body) {
+      opt.headers['Content-Type'] = 'application/json';
+      opt.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opt);
+    const text = await res.text();
+    let data;
+    try { data = JSON.stringify(JSON.parse(text), null, 2); }
+    catch { data = text; }
+    out.textContent = `HTTP ${res.status}\n\n${data}`;
+  } catch (e) {
+    out.textContent = '请求失败: ' + e.message;
+  }
+}
+
+function hello() {
+  const p = new URLSearchParams({
+    name: document.getElementById('name').value,
+    lang: document.getElementById('lang').value,
+    count: document.getElementById('count').value,
+  });
+  call('GET', '/api/hello?' + p.toString());
+}
+
+function echo() {
+  const msg = document.getElementById('msg').value;
+  call('POST', '/api/echo', {
+    message: msg,
+    items: ['alpha', 'beta', 'gamma', 'delta', 'epsilon'],
+  });
+}
+</script>
+</body>
+</html>
